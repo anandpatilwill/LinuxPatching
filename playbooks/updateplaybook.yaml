@@ -1,0 +1,17 @@
+---
+- name: Update Hosts
+  hosts: all  # Replace 'your_host_group' with the name of your inventory group containing the target hosts
+  become: yes            # Enable privilege escalation to execute tasks as a privileged user (e.g., root)
+
+  tasks:
+    - name: Update package cache
+      package_facts:
+      register: packages
+
+    - name: Install updates
+      package:
+        name: "{{ item }}"
+        state: latest
+      loop: "{{ packages['ansible_facts']['packages'] }}"
+      when: "'apt' in packages['ansible_facts']['package_manager']"  # Use 'apt' package manager for Ubuntu/Debian-based systems
+

@@ -1,0 +1,15 @@
+---
+- name: Stop EC2 Instance
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Stop EC2 instance
+      ec2:
+        instance_ids: "i-09c781e5daf65abe3"
+        state: "stopped"
+      register: result
+
+    - name: Display EC2 stop result
+      debug:
+        var: result
+

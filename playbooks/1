@@ -1,0 +1,127 @@
+---
+- name: Patch Management Playbook
+  hosts: all
+  gather_facts: true
+  vars:
+    # Your AWS credentials and other variables here
+    aws_access_key: "AKIA2P2M2MWT7DDHHAME"
+    aws_secret_key: "iw/Mz0tvzJkexPkH7dwArD5pmYje2Uisc5r8wNl1"
+    aws_region: "ap-south-1"
+    volume_size: "20"
+    availability_zone: "ap-south-1a"
+
+  tasks:
+    - name: Pre-Check - List Application Processes
+      shell: ps -ef
+      register: precheck_processes
+
+    - name: Pre-Check - List Mount Points
+      shell: df -h
+      register: precheck_mount_points
+
+    - name: Pre-Check - List Routing Table
+      shell: ss -r
+      register: precheck_routing_table
+
+    # Tasks for stopping the application would go here
+
+    - name: Install required Python libraries
+      become: true
+      package:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - python3-pip
+        - python3-setuptools
+
+    - name: Upgrade pip
+      become: true
+      pip:
+        name: pip
+        state: latest
+
+    - name: Install required Python packages
+      become: true
+      pip:
+        name:
+          - boto3
+          - botocore
+        state: latest
+
+    - name: Install amazon.aws collection
+      command: ansible-galaxy collection install amazon.aws
+
+    - name: Create EBS Volume
+      amazon.aws.ec2_vol:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        availability_zone: "{{ availability_zone }}"
+        volume_size: "{{ volume_size }}"
+      register: volume
+
+    - name: Take Snapshot of EBS Volume
+      amazon.aws.ec2_snapshot:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        description: "Snapshot of EBS Volume"
+        volume_id: "{{ volume.volume_id }}"
+      when: volume.changed
+
+
+
+    - name: Patch Update
+      become: true
+      become_method: sudo
+      apt:
+        upgrade: dist
+        update_cache: yes
+      register: patch_update_result
+      changed_when: patch_update_result.changed
+
+    # Tasks for starting the application would go here
+
+    - name: Post-Check - List Application Processes
+      shell: ps -ef
+      register: postcheck_processes
+
+    - name: Post-Check - List Mount Points
+      shell: df -h
+      register: postcheck_mount_points
+
+    - name: Post-Check - List Routing Table
+      shell: ss -r
+      register: postcheck_routing_table
+
+    - name: Compare Pre and Post-Check Results
+      block:
+        - name: Create Log Entry for Discrepancy
+          lineinfile:
+            path: /var/log/patch_update.log
+            line: "Patch update on {{ inventory_hostname }} resulted in discrepancies"
+            create: yes
+
+              #- name: Restart Application Service
+              #shell: "systemctl restart apache2"
+              #timeout: 120
+        - name: Restart Application Service
+          become: true
+          service:
+            name: apache2
+            state: restarted
+
+    - name: Restore EBS Volume from Snapshot
+      amazon.aws.ec2_vol:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: "{{ aws_region }}"
+        availability_zone: "{{ availability_zone }}"
+        volume_size: "{{ volume_size }}"
+        snapshot_id: "{{ volume.snapshot_id }}"
+      when: patch_update_result.failed | bool and volume.snapshot_id is defined
+
+    - name: Fail the playbook if patch update fails and no snapshot is available
+      fail:
+        msg: "Patch update failed, and no snapshot is available for restoration."
+      when: patch_update_result.failed | bool and not volume.snapshot_id

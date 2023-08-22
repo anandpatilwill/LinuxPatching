@@ -1,0 +1,142 @@
+---
+- name: Patch Management Playbook
+  hosts: all
+  gather_facts: true
+
+  vars:
+    volume_size: "20"
+    availability_zone: "ap-south-1a"
+
+  tasks:
+    - name: Check if Ansible is installed
+      raw: ansible --version
+      register: ansible_installed
+      ignore_errors: true
+
+    - name: Install Ansible if not already installed
+      raw: apt-get update && apt-get install -y ansible
+      become: true
+      when: ansible_installed.rc != 0
+
+    - name: Pre-Check - List Application Processes
+      shell: ps -ef
+      register: precheck_processes
+
+    - name: Pre-Check - List Mount Points
+      shell: df -h
+      register: precheck_mount_points
+
+    - name: Pre-Check - List Routing Table
+      shell: ss -r
+      register: precheck_routing_table
+
+    # Tasks for stopping the application would go here
+
+    - name: Install required Python libraries
+      become: true
+      package:
+        name:
+          - python3-pip
+          - python3-setuptools
+        state: latest
+
+    - name: Upgrade pip
+      become: true
+      pip:
+        name: pip
+        state: latest
+
+    - name: Install required Python packages
+      become: true
+      package:
+        name:
+          - python3-boto3
+          - python3-botocore
+        state: latest
+
+    - name: Install boto for amazon.aws collection
+      become: true
+      pip:
+        name: boto
+        state: latest
+
+    - name: Install amazon.aws collection
+      command: ansible-galaxy collection install amazon.aws
+
+    - name: Create EBS Volume
+      amazon.aws.ec2_vol:
+        aws_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+        aws_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+        region: "ap-south-1"
+        availability_zone: "{{ availability_zone }}"
+        volume_size: "{{ volume_size }}"
+      register: volume
+
+    - name: Take Snapshot of EBS Volume
+      amazon.aws.ec2_snapshot:
+        aws_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+        aws_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+        region: "ap-south-1"
+        description: "Snapshot of EBS Volume"
+        volume_id: "{{ volume.volume_id }}"
+      when: volume.changed
+
+    - name: Patch Update
+      become: true
+      become_method: sudo
+      apt:
+        upgrade: dist
+        update_cache: yes
+      register: patch_update_result
+      changed_when: patch_update_result.changed
+
+    # Tasks for starting the application would go here
+
+    - name: Post-Check - List Application Processes
+      shell: ps -ef
+      register: postcheck_processes
+
+    - name: Post-Check - List Mount Points
+      shell: df -h
+      register: postcheck_mount_points
+
+    - name: Post-Check - List Routing Table
+      shell: ss -r
+      register: postcheck_routing_table
+
+    - name: Compare Pre and Post-Check Results
+      block:
+        - name: Create Log Entry for Discrepancy
+          lineinfile:
+            path: /var/log/patch_update.log
+            line: "Patch update on {{ inventory_hostname }} resulted in discrepancies"
+            create: yes
+          become: true
+
+    - name: Install Apache HTTP Server (httpd) package
+      apt:
+        name: apache2
+        state: latest
+
+    - name: Start Apache HTTP Server (httpd) service
+      become: true
+      become_method: sudo
+      service:
+        name: apache2
+        state: started
+
+    - name: Restore EBS Volume from Snapshot
+      amazon.aws.ec2_vol:
+        aws_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+        aws_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+        region: "ap-south-1"
+        availability_zone: "ap-south-1a"
+        volume_size: "20"
+        snapshot_id: "{{ volume.snapshot_id }}"
+      when: patch_update_result.failed | bool and volume.snapshot_id is defined
+
+    - name: Fail the playbook if patch update fails and no snapshot is available
+      fail:
+        msg: "Patch update failed, and no snapshot is available for restoration."
+      when: patch_update_result.failed | bool and not volume.snapshot_id
+

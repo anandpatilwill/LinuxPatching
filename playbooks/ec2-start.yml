@@ -1,0 +1,15 @@
+---
+- name: Start EC2 Instance
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Start EC2 instance
+      ec2:
+        instance_ids: "i-09c781e5daf65abe3"
+        state: "running"
+      register: result
+
+    - name: Display EC2 start result
+      debug:
+        var: result
+
